@@ -1,0 +1,714 @@
+---
+title: "Best-Model-for-Advanced-House-Price-Prediction"
+author: "Kamrun Sumi"
+date: "3/28/2019"
+output:
+  html_document: default
+  pdf_document: default
+---
+###The Goal:
+The goal is to clean data and apply different models and checking model's prediction accuracy.
+
+##Part 1 Loading dataset
+
+Referencing libraries required and reading the data into R
+
+```{r}
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+library(scales)
+library(corrplot)
+library(leaps)
+library(caret)
+library(lattice)
+library(e1071)
+library(ggrepel)
+library(gridExtra)
+library(grid)
+
+```
+
+
+Now we are going to read train dataset through R.
+```{r}
+setwd("~/Desktop/project-6100/data set/House price prediction/house-prices-advanced-regression-techniques")
+workdf <-read.csv("train.csv", header=TRUE, stringsAsFactors = F)
+```
+##Part-2:	Exploratory Data Analysis & Preprocessing
+
+2.1 (a)Data size and structure
+In this part we are going to check our data set.
+```{r}
+dim(workdf)
+#str(workdf)
+#summary(workdf)
+#workdf
+data.type<-sapply(workdf, class) # Find the class of the existing data set
+table(data.type)
+```
+In workdf train has 81 columns (79 features + Id and response variable SalePrice) and 1460 number of rows. The train dataset consist of character and integer variables. Most of the character variables are actually (ordinal) factors, however we chose to read them into R as character strings as most of them require cleaning and feature engineering first.
+
+(b) Numerical and Categorical features 
+
+```{r}
+workdf[sapply(workdf, is.integer)] <- lapply(workdf[sapply(workdf, is.integer)], as.numeric)
+(numeric_cols <- names(workdf[,sapply(workdf,function(x) {is.numeric(x)})]))
+
+(char_cols <- names(workdf[,sapply(workdf,function(x) {is.character(x)})]))
+
+```
+
+(c)Transfering some numeric to categorical variables.
+```{r}
+#Changing MSSubClass to a character 
+workdf$MSSubClass <- as.character(workdf$MSSubClass)
+workdf$YrSold <- as.character(workdf$YrSold)
+
+ #Changing MoSold to a character 
+workdf$MoSold <- as.character(workdf$MoSold)
+
+#Now checking recent transformation.
+numeric_cols <- names(workdf[,sapply(workdf,function(x) {is.numeric(x)})])
+numeric_cols
+char_cols <- names(workdf[,sapply(workdf,function(x) {is.character(x)})])
+char_cols
+```
+
+
+(d)Correlation analysis
+numeric predictors only
+Now we have 35 numeric variables. We first decided to check the correlation between all numerical variables with sales price.
+```{r}
+numericVars <- (which(sapply(workdf, is.numeric)))
+#numericVarNames <- names(numericVars) 
+
+all_numVar <-workdf[, numericVars]
+
+#correlations of all numeric variables
+cor_numVar <- cor(all_numVar, use="pairwise.complete.obs") 
+
+#sort on decreasing correlations with SalePrice
+cor_sorted <- as.matrix(sort(cor_numVar[,'SalePrice'], decreasing = TRUE))
+
+ #select only high corelations
+CorHigh <- names(which(apply(cor_sorted, 1, function(x) abs(x)>0.5)))
+cor_numVar <- cor_numVar[CorHigh, CorHigh]
+
+corrplot.mixed(cor_numVar, tl.col="red", tl.pos = "lt")
+
+```
+
+####Exploring some of the most important variables
+I) Overall Quality
+Overall Quality has the highest correlation with SalePrice among the numeric variables (0.79). It rates the overall material and finish of the house on a scale from 1 (very poor) to 10 (very excellent).
+```{r}
+Mod1<-workdf[,c("SalePrice","OverallQual" , "GrLivArea", "GarageCars" ,"TotalBsmtSF","X1stFlrSF", "FullBath")]
+ggplot(data=workdf[!is.na(workdf$SalePrice),], aes(x=factor(OverallQual), y=SalePrice))+
+        geom_boxplot(col='blue') + labs(x='Overall Quality') +
+        scale_y_continuous(breaks= seq(0, 800000, by=100000), labels = comma)
+```
+The positive correlation is certainly there indeed, and seems to be a slightly upward curve. Regarding outliers, we do not see any extreme values. 
+
+II) (Ground) Living Area (square feet)
+
+```{r}
+#plot(workdf$GrLivArea, workdf$SalePrice, xlab="Living area per square ft", ylab="Sales price",  col="Red", main= "Sales price based on living area" )
+ggplot(data=workdf[!is.na(workdf$SalePrice),], aes(x=GrLivArea, y=SalePrice))+
+        geom_point(col='blue') + geom_smooth(method = "lm", se=FALSE, color="red", aes(group=1)) +
+        scale_y_continuous(breaks= seq(0, 800000, by=100000), labels = comma) +
+        geom_text_repel(aes(label = ifelse(workdf$GrLivArea[!is.na(workdf$SalePrice)]>4500, rownames(workdf), '')))
+
+
+```
+
+
+From the picture above, there are two values which is suggesting large living areas however the price is very less. which it not logical. These two points are definately outliers.
+To check more details, we fit a linear model with only GrLivArea.
+
+```{r}
+fit <- lm(workdf$SalePrice ~ workdf$GrLivArea, data=workdf)
+## Calculate R^2  value
+R2 <- round(summary(fit)$r.squared, 2)
+#Now build up the equation using constructs described in ?plotmath:
+eqn <- bquote( R^2 == .(R2))
+
+## Plot the data
+plot(workdf$SalePrice ~ workdf$GrLivArea, data=workdf, col="blue")
+abline(fit, col="red", lwd=4)
+text(5000, 7e+05, eqn)
+```
+ 
+ The total R^2 0.5 which is good. 
+ 
+ 
+##3.Missing values.
+(a) Missing data counts
+Now it's time to work with missing values.
+
+
+```{r}
+# Check the total no of missing data in all the data set
+res<-sapply(workdf,function(x) sum(is.na(x)))
+
+# No of missing values in chatagorical columns
+(res<-sort(sapply(workdf[,char_cols],function(x) sum(is.na(x))), decreasing = T))
+# No of missing values in numerical columns
+
+(res<-sort(sapply(workdf[,numeric_cols],function(x) sum(is.na(x))), decreasing = T))
+
+```
+
+Summarize the missing values in the data.
+
+1) poolQC = Has missing values, 1453
+2) MiscFeature = 1406
+3)Alley = 1369
+4) Fence = 1179
+5)Fireplace = 690
+6) LotFrontage = 259 
+7) Garage type, GarageYrBlt,GarageQual,GarageCond  = 81 (there missing values are same and all are related to Garage may be somehow they are related. we will keep this in mind while analyzing)
+8) BsmtExposure, BsmtFinType2  = 38 (Same situation here)
+9)  BsmtQual,BsmtCond, BsmtFinType1 = 37
+10)  MasVnrType, MasVnrArea = 8
+11) Electrical = 1
+
+By analyzing missing values, it can be easily seen that the categorical variables have the largest number of missing values rather than numerical variables such as PoolQC, MiscFeature, Alley, Fence, FireplaceQu, LotFrontage, GarageType, GarageYrBlt and so on. On the other hand there are three numerical variables which have missing values such as LotFrontage, GarageYrBlt, MasVnrArea.
+
+
+####Missing data treatment
+Now we are going to focus it one by one.
+1) PoolQC the PoolArea variable
+
+The PoolQC has the highest NAs. 
+
+It has thee levels EX = Excelent, Gd = Good, Fa = Fair. Where there is no information about pool(missing value) that means those houses do not have pool. Therefore, we can treat our missing values as Na, NA = No pool.
+
+```{r}
+workdf$PoolQC[is.na(workdf$PoolQC)] <- "NoPool"
+#Changing poolQC as a factorial to chechk its level.
+workdf$PoolQC= as.factor(workdf$PoolQC)
+levels(workdf$PoolQC)
+```
+
+
+```{r}
+ggplot(workdf[!is.na(workdf$SalePrice),], aes(x=PoolQC, y=SalePrice)) +
+        geom_bar(stat='summary', fun.y = "median", fill='blue') +
+        scale_y_continuous(breaks= seq(0, 800000, by=100000), labels = comma) +
+        geom_label(stat = "count", aes(label = ..count.., y = ..count..))
+```
+
+Only 7 houses have pool. From them two are very excelent condition, 3 are good, 2 are fair.
+2) MiscFeature
+Within Miscellaneous Feature, there are 1406 NAs. As the values are not factorial, we will convert MiscFeature into a ordinal.
+
+```{r}
+workdf$MiscFeature[is.na(workdf$MiscFeature)] <- 'None'
+
+#Changing MiscFeature as a factorial to chechk its level.
+workdf$MiscFeature = as.factor(workdf$MiscFeature)
+levels(workdf$MiscFeature)
+```
+
+
+```{r}
+ggplot(workdf[!is.na(workdf$SalePrice),], aes(x=MiscFeature, y=SalePrice)) +
+        geom_bar(stat='summary', fun.y = "median", fill='blue') +
+        scale_y_continuous(breaks= seq(0, 800000, by=100000), labels = comma) +
+        geom_label(stat = "count", aes(label = ..count.., y = ..count..))
+```
+
+When looking at the frequencies, the variable seems irrelevant to me. Having a shed probably means Those houses do not have Garage. How could it be extra feature rather that would be appropiate to say that this feature would lower the sales price. Also, while it makes a lot of sense that a house with a Tennis court is expensive, there is only one house with a tennis court in the training set.
+
+3) Alley 
+Alley: indicates the type of alley access. Treating specific situation that NA = No Access. 
+We are going to replace NA by "No access"
+
+```{r}
+workdf$Alley[is.na(workdf$Alley)] <- 'Unac'
+#Changing MiscFeature as a factorial to chechk its level.
+workdf$Alley = as.factor(workdf$Alley)
+levels(workdf$Alley)
+```
+4) Fence Column has 1179 missing values.Fence column where missing vaues are present. we are treating those missing as  No Fence.
+
+```{r}
+workdf$Fence[is.na(workdf$Fence)] <- "NoFence"
+workdf$Fence <- as.factor(workdf$Fence)
+levels(workdf$Fence)
+```
+
+5)Fireplace = 690
+```{r}
+workdf$FireplaceQu[is.na(workdf$FireplaceQu)] <- "NoFireplace"
+workdf$FireplaceQu <- as.factor(workdf$FireplaceQu)
+levels(workdf$FireplaceQu)
+```
+
+6) LotFrontage: Linear feet of street connected to property
+LotFrontage = 259 . Which is numerical variable.The most reasonable imputation seems to take the median per neigborhood. 
+```{r}
+workdf$LotFrontage[is.na(workdf$LotFrontage)] <- median(workdf$LotFrontage, na.rm = TRUE)
+
+```
+
+
+7)Garage related variables
+If any garage column has missing values. We figured out that the entire rows of all garage varibles have the missing. Therefore, we treated them as No garage attached that home.
+
+Garage type, GarageYrBlt,GarageQual,GarageCond  = 81 
+```{r}
+#garage<-c(df$GarageYrBlt,df$GarageQual,df$GarageCond )
+
+workdf$GarageYrBlt[is.na(workdf$GarageYrBlt)]<-median(workdf$GarageYrBlt, na.rm = TRUE)
+
+#GT
+workdf$GarageType[is.na(workdf$GarageType)]= "NoGarage"
+workdf$GarageType <- as.factor(workdf$GarageType)
+
+#GF
+workdf$GarageFinish[is.na(workdf$GarageFinish)]= "NoGarage"
+workdf$GarageFinish <- as.factor(workdf$GarageFinish)
+
+#GQ
+workdf$GarageQual[is.na(workdf$GarageQual)]= "NoGarage"
+workdf$GarageQual <- as.factor(workdf$GarageQual)
+levels(workdf$GarageQual)
+#GC
+workdf$GarageCond[is.na(workdf$GarageCond)] = "NoGarage"
+workdf$GarageCond <- as.factor(workdf$GarageCond)
+levels(workdf$GarageCond)
+
+```
+
+
+8) Basement variables
+Basement related missing values. Where there is any information missing we figured out that that home does not have basement.
+BsmtQual, BsmtCond, BsmtExposure, BsmtFinType1, BsmtFinType2 .For all Basement variables where NA's are present. We are going to replace them by "NoBasement"
+```{r}
+workdf$BsmtQual[is.na(workdf$BsmtQual)] = "NoBasement"
+workdf$BsmtQual <- as.factor(workdf$BsmtQual)
+levels(workdf$BsmtQual)
+
+```
+
+```{r}
+workdf$BsmtCond[is.na(workdf$BsmtCond)] = "NoBasement"
+workdf$BsmtCond <- as.factor(workdf$BsmtCond)
+levels(workdf$BsmtCond)
+```
+
+```{r}
+workdf$BsmtExposure[is.na(workdf$BsmtExposure)] = "NoBasement"
+workdf$BsmtExposure <- as.factor(workdf$BsmtExposure)
+levels(workdf$BsmtExposure)
+```
+
+```{r}
+workdf$BsmtFinType1[is.na(workdf$BsmtFinType1)] = "NoBasement"
+workdf$BsmtFinType1 <- as.factor(workdf$BsmtFinType1)
+levels(workdf$BsmtFinType1)
+```
+
+```{r}
+workdf$BsmtFinType2[is.na(workdf$BsmtFinType2)] = "NoBasement"
+workdf$BsmtFinType2 <- as.factor(workdf$BsmtFinType2)
+levels(workdf$BsmtFinType2)
+```
+
+9)  MasVnrType, MasVnrArea and Electrical variable
+MasVnrArea: Masonry veener area in square feet
+Definition of Masonry Veener from google: Veneer masonry is a popular choice for home building and remodeling, because it gives the appearance of a solid brick or stone wall while providing better economy and insulation. It can be used as an addition to conventional wood frame structures, and can be placed on concrete block walls.
+Brick veeners are not essential to the stucture of the house but are used to chance the appearance of the wall while providing better insulation. They tend to only have one brick layer.
+```{r}
+# Treatment for MasVnrType missing = None 
+workdf$MasVnrType[is.na(workdf$MasVnrType)] <- "None"
+workdf$MasVnrType <- as.factor(workdf$MasVnrType)
+levels(workdf$MasVnrType)
+# Treatment for MasVnrArea  missing = 0 
+workdf$MasVnrArea[is.na(workdf$MasVnrArea)] <- 0
+
+
+#imputing mode
+workdf$Electrical[is.na(workdf$Electrical)] <- names(sort(-table(workdf$Electrical)))[1]
+
+workdf$Electrical <- as.factor(workdf$Electrical)
+levels(workdf$Electrical)
+```
+Checking is there any missing values left.
+
+```{r}
+res<-sapply(workdf,function(x) sum(is.na(x)))
+res
+```
+
+Now our data set is clear. There is no missing values.
+
+###4Feature creation
+Eventhough we do not have any experience, we tied to combine some variables together based on our experience.Some other varaibles to combine would be OpenPorchSF, EnclosedPorch, ScreenPorch, TSnPorch. We are going to combine these into a variable called TotalPorchSf. And changed it as a catagorical variable.
+
+Looking at the bathroom variables, it seems to make sense to combine BsmtFullBath, BsmtHalfBath , FullBath, HalfBath into 1 variable called TotalBaths
+```{r}
+# TotalPorch Sf being added 
+workdf$TotalPorchSf <- workdf$OpenPorchSF + workdf$EnclosedPorch + workdf$ScreenPorch + workdf$X3SsnPorch
+
+# HasPorch 
+workdf$HasPorch <- ifelse(workdf$TotalPorchSf > 0,'Yes','No')
+
+# TotalBaths being added 
+workdf$TotalBaths <- workdf$BsmtFullBath + (workdf$BsmtHalfBath*.5) + workdf$FullBath + (workdf$HalfBath*.5)
+
+#Creating new variable based on remodeling the house or not. Remodeling = 1, and No Remodeling = 0.
+workdf$Remod <- ifelse(workdf$YearBuilt==workdf$YearRemodAdd, 0, 1) 
+
+#Age of the house variable being added.
+workdf$Age <- as.numeric(workdf$YrSold)-workdf$YearRemodAdd
+
+#Tranfering Year sold as cetagorical again
+workdf$YrSold <- as.character(workdf$YrSold)
+dim(workdf)
+```
+
+Now we have 1460 rows and   86 columns.
+
+Correlation analysis again.
+```{r}
+#Numerical variables only for cheking correlation
+numericVars <- which(sapply(workdf, is.numeric)) 
+
+all_numVar <- workdf[, numericVars]
+cor_numVar <- cor(all_numVar, use="pairwise.complete.obs") #correlations of all numeric variables
+
+#sort on decreasing correlations with SalePrice
+cor_sorted <- as.matrix(sort(cor_numVar[,'SalePrice'], decreasing = TRUE))
+
+ #select only high corelations
+CorHigh <- names(which(apply(cor_sorted, 1, function(x) abs(x)>0.5)))
+cor_numVar <- cor_numVar[CorHigh, CorHigh]
+
+corrplot.mixed(cor_numVar, tl.col="red", tl.pos = "lt", tl.cex = 0.7,cl.cex = .7, number.cex=.7)
+```
+
+From the figure, it can be easily seen that there are 12 numeric features with a correlation of at least 0.5 with SalePrice. All of them have positive correlation. However, it seemed that there are some variables which have high correlation with other predictors. We have to work with multicollinearity before modeling. 
+
+Multicolliniarity
+First of all, we are dropping a variable if two variables are highly correlated. From the above correlation plot, we have seen that GarageCars and GarageArea have a correlation of 0.88. Of those two, we are dropping the variable with the lowest correlation with SalePrice (which is GarageCars with a SalePrice correlation of 0.64. GarageArea has a SalePrice correlation of 0.61).
+
+```{r}
+drop= c('GarageArea','TotalBsmtSF',"TotRmsAbvGrd","FullBath", "YearBuilt",'YearRemodAdd',"Age")
+New_df = workdf[,!(names(workdf) %in% drop)]
+
+drop <- names(which(apply(cor_sorted, 1, function(x) abs(x)<0.5)))
+Updated_df = New_df[,!(names(New_df) %in% drop)]
+
+ Mod2<-(Updated_df[,c("SalePrice", "OverallQual", "GrLivArea", "X1stFlrSF", "GarageCars" ,  "TotalBaths" )])
+
+Updated_df[sapply(Updated_df, is.factor)] <- lapply(Updated_df[sapply(Updated_df, is.factor)], as.character)
+data.type<-sapply(Updated_df, class) # Find the class of the existing data set
+table(data.type)
+
+```
+
+
+##PreProcessing predictor variables before modeling
+#Numeric Outlier
+Some of our numerical variables have outlier values, so we treat them the following way –
+     • Capping –
+           X > 1.5 * IQR, we replace value of X by 95th Percentile
+
+     • Flooring-
+           X < 1.5 * IQR, we replace the value by 5th Percentile
+
+```{r}
+numericVars <- (which(sapply(Updated_df, is.numeric)))
+
+d <- Updated_df[,numericVars]
+fun <- function(x){
+    quantiles <- quantile( x, c(.05, .95 ) )
+    x[ x < quantiles[1] ] <- quantiles[1]
+    x[ x > quantiles[2] ] <- quantiles[2]
+    x
+}
+#fun(Mod2[,3])
+ for (i in 1:ncol(d)){
+    d[,i]<- fun(d[,i]) 
+}
+```
+
+###Skewness and normalizing of the numeric predictors and target
+Skewness Skewness is a measure of the symmetry in a distribution. A symmetrical dataset will have a skewness equal to 0. So, a normal distribution will have a skewness of 0. Skewness essentially measures the relative size of the two tails. As a rule of thumb, skewness should be between -1 and 1. In this range, data are considered fairly symmetrical. In order to fix the skewness, I am taking the log for all numeric predictors with an absolute skew greater than 0.8 (actually: log+1, to avoid division by zero issues).
+
+```{r}
+# SKEWNESS
+
+df_numeric <- (d)
+# transform any skewed data into normal
+skewed <- apply(df_numeric, 2, skewness)
+skewed <-skewed[abs(skewed) > 0.75] 
+
+## Transform skewed features log transformation
+for (x in names(skewed)) {
+  
+  df_numeric[[x]] <- log(df_numeric[[x]] + 1)
+}
+# normalize the data
+scaler <- preProcess(df_numeric)
+df_numeric <- (predict(scaler, df_numeric))
+
+
+#Remove outlier
+#for (i in 1:ncol(df_numeric)){
+#    boxplot(df_numeric[,i], col="red", outline = FALSE)}
+```
+
+##Categorical variables
+
+factorizing the remaining character variables.At this point, we have made sure that all variables with NAs are taken care of. However, we still need to also take care of the remaining character variables that without missing values. We are going to creat some dummy variables
+
+
+```{r}
+
+# ONE HOT ENCODING FOR CATEGORICAL VARIABLES
+
+categorical_feature <- (which(sapply(Updated_df, is.character)))
+
+df_cate <- Updated_df[,categorical_feature] 
+
+# one hot encoding for categorical data(Creating dummuy variables)
+library(caret)
+dummy <- dummyVars(" ~ .", data=df_cate)
+df_categoric <- data.frame(predict(dummy,newdata=df_cate))
+
+###combining all variables.
+df <- cbind(df_numeric, df_categoric)
+dim(df)
+
+```
+
+Checking correlation again.
+```{r}
+#Numerical variables only for cheking correlation
+cor_numVar <- cor(df, use="pairwise.complete.obs") 
+
+#sort on decreasing correlations with SalePrice
+cor_sorted <- as.matrix(sort(cor_numVar[,'SalePrice'], decreasing = TRUE))
+
+ #select only high corelations
+CorHigh <- names(which(apply(cor_sorted, 1, function(x) (x>0.4) & (x <-0.5) )))
+cor_numVar <- cor_numVar[CorHigh, CorHigh]
+
+corrplot.mixed(cor_numVar, tl.col="red", tl.pos = "lt", tl.cex = 0.7,cl.cex = .7, number.cex=.7)
+```
+
+Droping less than 0.4 correlation variables.
+```{r}
+drop <- names(which(apply(cor_sorted, 1, function(x) (x)< 0.4)))
+Final_df = df[,!(names(df) %in% drop)]
+```
+
+Cheking Vif, for multicolliniarity
+```{r}
+library(car)
+mymodel<-lm(Final_df$SalePrice~., data= Final_df)
+vif(mymodel)
+```
+
+We see that VIF values are below 10. So, no further variables are dropped. The next step is to check for influential observations and we do that using Cook’s Distance algorithm. 
+#Cook distance
+
+```{r}
+plot(mymodel, pch=18, col="red", which = c(4))
+md<-cooks.distance(mymodel)
+```
+
+We can see that we had 3 influential observations and we dropped them. After transforming some of the variables, we again run a regression and gott the following results.
+#Removing influencial point.
+
+###Spliting the dataset for different models. 70% training and 30% testing.
+```{r}
+Final_df<-Final_df[-c(524,1299, 1325),]
+Mod2<-Final_df
+Mod3<-df
+#For Model 1
+lenT<-nrow(Mod1)
+lenTrain<-floor(0.7*lenT)
+lenTest<-lenT-lenTrain
+
+train_1<-Mod1[1:lenTrain,]
+test_1<-Mod1[lenTrain+1:lenTest,]
+
+#For Model 2
+lenT2<-nrow(Mod2)
+lenTrain2<-floor(0.7*lenT2)
+lenTest2<-lenT2-lenTrain2
+
+train2<-Mod2[1:lenTrain2,]
+test2<-Mod2[lenTrain2+1:lenTest2,]
+
+#For model 3(For random forest, Lasso, and Ridge)
+Mod3<-df
+lenT2<-nrow(Mod3)
+lenTrain3<-floor(0.7*lenT2)
+lenTest3<-lenT2-lenTrain2
+
+train3<-Mod3[1:lenTrain2,]
+test3<-Mod3[lenTrain2+1:lenTest2,]
+
+```
+
+##Methodology
+##Multiple Linear regression
+
+We used linear regression to train our models. For dependent continuous variables, linear regression is a fair choice. We use Ordinary Least Squares as the method of estimation. 
+
+#Model Building – Model 1
+
+We do our first model based on six numerical variables; Overall Quality, GrLivArea, GarageCars, TotalBsmtArea, FullBath and TotalRoomsAboveGrd using linear regression as our technique. We first do missing value imputation and transformation of variables before running the model.
+A linear model requires that all features are numeric.For my first model
+
+```{r}
+#linear fit and also checking assumption for linear fit.
+Model_1<-lm(train_1$SalePrice ~ OverallQual+GrLivArea+GarageCars+TotalBsmtSF+X1stFlrSF+FullBath , data= train_1)
+summary(Model_1)
+```
+
+As we can see, our R2 Squared value is 0.7882 for training dataset and for test dataset it is 0.7869. The results were good but we run a second model to improve our results.
+
+
+```{r}
+par(mfrow = c(2,2))
+plot(Model_1, col= "blue")
+abline(Model_1, col = "red", lwd = 4)
+```
+
+```{r}
+#Predict(lm.fit, data=test_1, interval="confidence")
+pred1 <- predict(Model_1, newdata = test_1)
+mse <- sum(((pred1) - test_1$SalePrice)^2)/length(test_1$SalePrice)
+c(MSE =mse, R2=summary(Model_1)$r.squared)
+
+```
+
+##Model Building – Model 2
+For our second model, we do detailed analysis of all the predictor variables to select the best variables out of them.First, we do missing value imputation for both numerical and categorical variables. After doing missing value imputation, we check for outliers. Some of our numerical variables have outlier values, so we treat them the following way –
+     • Capping –
+           X > 1.5 * IQR, we replace value of X by 95th Percentile
+
+     • Flooring-
+           X < 1.5 * IQR, we replace the value by 5th Percentile
+Once done, we create dummy variables for the categorical variables and do a correlation analysis on our 95 dummies and numerical variables. We shortlist certain variables based on their Pearson correlation coefficient with the dependent variable. The criteria that we use is >0.5 and <-0.5. The correlation matrix of our shortlisted variables is the following:
+```{r}
+#linear fit and also checking assumption for linear fit.
+lm.fit2<-lm(train2$SalePrice ~ OverallQual + X1stFlrSF + GrLivArea + GarageCars + TotalBaths+ MSSubClass60  + BsmtQualEx + BsmtFinType1GLQ + HeatingQCEx+ KitchenQualGd +GarageTypeAttchd+GarageFinishFin, data= train2)
+summary(lm.fit2)
+par(mfrow = c(2,2))
+plot(lm.fit2, col= "blue")
+abline(lm.fit2, col = "red", lwd = 4)
+```
+
+```{r}
+summary(lm.fit2)
+#Predict(lm.fit2, data=test2, interval="confidence")
+pred2 <- predict(lm.fit2, newdata = test2)
+mse_fit2 <- sum(((pred2) - test2$SalePrice)^2)/length(test2$SalePrice)
+c(MSE = mse_fit2, R2=summary(lm.fit2)$r.squared)
+```
+
+###Random forest
+After using the method of OLS regression, we have applied a random forest to the test data and our results have improved significantly. This time we are going to fit random forest using 306 variables. Randomforest has ability to choose important variables for model.
+```{r}
+library(randomForest)
+#using random forest
+
+fit_rf=randomForest(train3$SalePrice~. ,data=train3,do.trace=T,ntree=100, mtry=2, importance=TRUE)
+
+#predicting on the basis of this model
+score_rf=predict(fit_rf,newdata = test3)
+
+#checking the MSE & RMSE 
+mse_random=sum((test2$SalePrice-score_rf)^2)/length(score_rf)
+(rmse2=sqrt(mse_random))
+c(mse2 =mse_random, R2=summary(Model_1)$r.squared)
+
+#checking variable important
+varImpPlot(fit_rf)
+```
+
+#Ridge regression.
+The glmnet() function has an alpha argument that determines what type of model is fit. If alpha=0 then a ridge regression model is fit, and if alpha=1 then a lasso model is fit. We first fit a ridge regression model.
+By default the glmnet() function performs ridge regression for an automati- cally selected range of λ values. However, here we have chosen to implement the function over a grid of values ranging from λ = 1010 to λ = 10−2, es- sentially covering the full range of scenarios from the null model containing only the intercept, to the least squares fit. As we will see, we can also com- pute model fits for a particular value of λ that is not one of the original grid values. Note that by default, the glmnet() function standardizes the variables so that they are on the same scale. To turn off this default setting, use the argument standardize=FALSE.
+Associated with each value of λ is a vector of ridge regression coefficients, stored in a matrix that can be accessed by coef()
+
+```{r}
+# Ridge Regressoin
+
+#library(foreach)
+library (glmnet )
+x=model.matrix (train3$SalePrice ~., data = train3)
+y=train3$SalePrice
+grid =10^ seq (10,-2,length =100)
+#Ridge
+ridge.mod =glmnet (x,y,alpha=0, lambda =grid)
+ridge.mod$lambda [50]
+ridge.mod =glmnet (x,y,alpha=0, lambda =grid)
+ridge.mod$lambda [50]
+set.seed (1)
+train=sample(1: nrow(x), nrow(x)/2)
+test=(- train )
+y.test=y[test]
+ridge.mod =glmnet(x[train,],y[train],alpha =0,lambda =grid,thresh =1e-12)
+ridge.pred=predict (ridge.mod ,s=4, newx=x[test,])
+ridge_mse<-sum( ridge.pred -y.test)^2/length(y.test)
+ridge_mse
+(rmse_ridge<-sqrt(ridge_mse))
+
+```
+
+MSE error for Ridge regression 1.200387.
+###Lasso
+We saw that ridge regression with a wise choice of λ can outperform least squares as well as the null model on the Hitters data set. We now ask whether the lasso can yield either a more accurate or a more interpretable model than ridge regression. In order to fit a lasso model, we once again use the glmnet() function; however, this time we use the argument alpha=1. Other than that change, we proceed just as we did in fitting a ridge model. Like random forest lasso can choose important variables for it's model.
+
+```{r}
+
+# Lasso
+set.seed (1)
+train=sample(1: nrow(x), nrow(x)/2)
+test=(- train )
+y.test=y[test]
+lasso.mod =glmnet(x[train ,],y[train],alpha =1,lambda =grid)
+plot(lasso.mod)
+set.seed (1)
+cv.out =cv.glmnet (x[train ,],y[train],alpha =1)
+plot(cv.out)
+bestlam =cv.out$lambda.min
+lasso.pred=predict (lasso.mod ,s=bestlam ,newx=x[test,])
+mse_lasso<-sum(( lasso.pred-y.test)^2/length(y.test))
+mse_lasso
+(rmse_lasso<-sqrt(mse_lasso))
+
+```
+
+We got MSE error  0.120796
+Conclustion
+Model-1
+ mse
+[1] 1949610829
+Model-2
+mse_fit2
+0.1502786
+
+Random forest
+mse_random
+ 1.217915
+
+Lasso
+ mse_lasso
+ 0.120796
+ 
+ Ridge regession
+ ridge_mse
+ 1.200387
+ 
+ Based on mse error Lasso perform best.
